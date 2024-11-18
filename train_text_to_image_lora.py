@@ -56,7 +56,7 @@ if is_wandb_available():
     import wandb
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
-check_min_version("0.32.0.dev0")
+# check_min_version("0.32.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -146,6 +146,13 @@ def log_validation(
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
+    parser.add_argument(
+        "--train_mode",
+        type=str,
+        default=None,
+        required=True,
+        help="Whether it is train mode or test mode that runs the trained lora model.",
+    )
     parser.add_argument(
         "--pretrained_model_name_or_path",
         type=str,
@@ -267,7 +274,7 @@ def parse_args():
     parser.add_argument(
         "--train_batch_size", type=int, default=16, help="Batch size (per device) for the training dataloader."
     )
-    parser.add_argument("--num_train_epochs", type=int, default=100)
+    parser.add_argument("--num_train_epochs", type=int, default=10)
     parser.add_argument(
         "--max_train_steps",
         type=int,
@@ -425,8 +432,8 @@ def parse_args():
         args.local_rank = env_local_rank
 
     # Sanity checks
-    if args.dataset_name is None and args.train_data_dir is None:
-        raise ValueError("Need either a dataset name or a training folder.")
+    # if args.dataset_name is None and args.train_data_dir is None:
+    #     raise ValueError("Need either a dataset name or a training folder.")
 
     return args
 
@@ -436,8 +443,7 @@ DATASET_NAME_MAPPING = {
 }
 
 
-def main():
-    args = parse_args()
+def main(args):
     if args.report_to == "wandb" and args.hub_token is not None:
         raise ValueError(
             "You cannot use both --report_to=wandb and --hub_token due to a security risk of exposing your token."
@@ -600,9 +606,11 @@ def main():
             data_dir=args.train_data_dir,
         )
     else:
-        data_files = {}
-        if args.train_data_dir is not None:
-            data_files["train"] = os.path.join(args.train_data_dir, "**")
+        data_files = {
+            "train": "images/train/**",
+            # "validation": "images/dev/**",
+            # "test": "images/test/**",
+        }
         dataset = load_dataset(
             "imagefolder",
             data_files=data_files,
@@ -976,4 +984,28 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    if args.train_mode != "true":
+        print('Test Mode!!')
+        pipeline = DiffusionPipeline.from_pretrained(
+            args.pretrained_model_name_or_path,
+            revision=args.revision,
+            variant=args.variant,
+            torch_dtype=torch.float32,
+        )
+
+        # load attention processors
+        pipeline.load_lora_weights(args.output_dir)
+
+        # run inference
+        logging_dir = Path(args.output_dir, args.logging_dir)
+        accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
+        accelerator = Accelerator(
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            mixed_precision=args.mixed_precision,
+            log_with=args.report_to,
+            project_config=accelerator_project_config,
+        )
+        images = log_validation(pipeline, args, accelerator, epoch=1111, is_final_validation=True)
+    else:
+        main(args)

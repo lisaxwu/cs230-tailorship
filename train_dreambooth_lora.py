@@ -64,13 +64,14 @@ from diffusers.utils import (
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
+import pandas as pd
 
 
 if is_wandb_available():
     import wandb
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
-check_min_version("0.32.0.dev0")
+# check_min_version("0.32.0.dev0")
 
 logger = get_logger(__name__)
 
@@ -548,6 +549,24 @@ def parse_args(input_args=None):
     return args
 
 
+def get_images_and_promots(dirname='./images/train'):
+    prompt_dict = {}
+    imgpaths = []
+    for root, dirs, files in os.walk(dirname):
+        for f in files:
+            f = os.path.join(root, f)
+            fp = Path(f)
+            if fp.suffix == '.csv':
+                df = pd.read_csv(f)
+                for _, row in df.iterrows():
+                    img = Path(os.path.join(root, row['file_name']))
+                    prompt_dict[str(img)] = row['text']
+            elif fp.suffix == '.jpg' or fp.suffix == '.png':
+                imgpaths.append(fp)
+    return imgpaths, prompt_dict
+
+
+
 class DreamBoothDataset(Dataset):
     """
     A dataset to prepare the instance and class images with the prompts for fine-tuning the model.
@@ -579,7 +598,8 @@ class DreamBoothDataset(Dataset):
         if not self.instance_data_root.exists():
             raise ValueError("Instance images root doesn't exists.")
 
-        self.instance_images_path = list(Path(instance_data_root).iterdir())
+        self.instance_images_path, self.prompt_dict = get_images_and_promots(instance_data_root)
+        # self.instance_images_path = list(Path(instance_data_root).iterdir())
         self.num_instance_images = len(self.instance_images_path)
         self.instance_prompt = instance_prompt
         self._length = self.num_instance_images
@@ -611,7 +631,8 @@ class DreamBoothDataset(Dataset):
 
     def __getitem__(self, index):
         example = {}
-        instance_image = Image.open(self.instance_images_path[index % self.num_instance_images])
+        img_path = self.instance_images_path[index % self.num_instance_images]
+        instance_image = Image.open(img_path)
         instance_image = exif_transpose(instance_image)
 
         if not instance_image.mode == "RGB":
@@ -621,8 +642,9 @@ class DreamBoothDataset(Dataset):
         if self.encoder_hidden_states is not None:
             example["instance_prompt_ids"] = self.encoder_hidden_states
         else:
+            cur_prompt = self.prompt_dict.get(str(img_path), self.instance_prompt)
             text_inputs = tokenize_prompt(
-                self.tokenizer, self.instance_prompt, tokenizer_max_length=self.tokenizer_max_length
+                self.tokenizer, cur_prompt, tokenizer_max_length=self.tokenizer_max_length
             )
             example["instance_prompt_ids"] = text_inputs.input_ids
             example["instance_attention_mask"] = text_inputs.attention_mask
@@ -921,7 +943,7 @@ def main(args):
     )
     unet.add_adapter(unet_lora_config)
 
-    # The text encoder comes from 🤗 transformers, we will also attach adapters to it.
+    # The text encoder comes from transformers, we will also attach adapters to it.
     if args.train_text_encoder:
         text_lora_config = LoraConfig(
             r=args.rank,
